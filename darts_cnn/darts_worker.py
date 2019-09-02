@@ -134,7 +134,7 @@ class DARTSWorker(Worker):
 
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, float(budget))
 
-        for epoch in range(budget):
+        for epoch in range(int(budget)):
             scheduler.step()
             logging.info('epoch %d lr %e', epoch, scheduler.get_lr()[0])
             model.drop_path_prob = config['dropout_rate'] * epoch / budget
