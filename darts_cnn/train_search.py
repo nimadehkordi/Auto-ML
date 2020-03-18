@@ -57,7 +57,7 @@ fh.setFormatter(logging.Formatter(log_format))
 logging.getLogger().addHandler(fh)
 
 
-CIFAR_CLASSES = 49
+K49_CLASSES = 49
 
 
 def main():
@@ -76,7 +76,7 @@ def main():
 
   criterion = torch.nn.CrossEntropyLoss()
   criterion = criterion.cuda()
-  model = Network(args.init_channels, CIFAR_CLASSES, args.layers, criterion)
+  model = Network(args.init_channels, K49_CLASSES, args.layers, criterion)
   model = model.cuda()
   logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
 
@@ -86,36 +86,18 @@ def main():
       momentum=args.momentum,
       weight_decay=args.weight_decay)
 
-  data_dir = '../data/kmnist/'
+  data_dir = './data/'
 
   data_augmentations = transforms.ToTensor()
 
   # Load the Data here
   train_dataset = K49(data_dir, True, data_augmentations)
-  #test_dataset = K49(data_dir, False, data_augmentations)
+  test_dataset = K49(data_dir, False, data_augmentations)
 
   num_train = len(train_dataset)
   indices = list(range(num_train))
   split = int(np.floor(args.train_portion * num_train))
 
-  '''
-  train_transform, valid_transform = utils._data_transforms_cifar10(args)
-  train_data = dset.CIFAR10(root=args.data, train=True, download=True, transform=train_transform)
-
-  num_train = len(train_data)
-  indices = list(range(num_train))
-  split = int(np.floor(args.train_portion * num_train))
-
-  train_queue = torch.utils.data.DataLoader(
-      train_data, batch_size=args.batch_size,
-      sampler=torch.utils.data.sampler.SubsetRandomSampler(indices[:split]),
-      pin_memory=True, num_workers=2)
-
-  valid_queue = torch.utils.data.DataLoader(
-      train_data, batch_size=args.batch_size,
-      sampler=torch.utils.data.sampler.SubsetRandomSampler(indices[split:num_train]),
-      pin_memory=True, num_workers=2)
-  '''
   train_queue = torch.utils.data.DataLoader(dataset=train_dataset,
                                              batch_size=args.batch_size,
                                              sampler=torch.utils.data.sampler.SubsetRandomSampler(indices[:split]),
@@ -152,6 +134,7 @@ def main():
     logging.info('valid_acc %f', valid_acc)
 
     utils.save(model, os.path.join(args.save, 'weights.pt'))
+    return train_acc, valid_acc
 
 
 def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr):
@@ -164,12 +147,12 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr):
     n = input.size(0)
 
     input = Variable(input, requires_grad=False).cuda()
-    target = Variable(target, requires_grad=False).cuda(async=True)
+    target = Variable(target, requires_grad=False).cuda()
 
     # get a random minibatch from the search queue with replacement
     input_search, target_search = next(iter(valid_queue))
     input_search = Variable(input_search, requires_grad=False).cuda()
-    target_search = Variable(target_search, requires_grad=False).cuda(async=True)
+    target_search = Variable(target_search, requires_grad=False).cuda()
 
     architect.step(input, target, input_search, target_search, lr, optimizer, unrolled=args.unrolled)
 
@@ -201,7 +184,7 @@ def infer(valid_queue, model, criterion):
 
   for step, (input, target) in enumerate(valid_queue):
     input = Variable(input, volatile=True).cuda()
-    target = Variable(target, volatile=True).cuda(async=True)
+    target = Variable(target, volatile=True).cuda()
 
     logits = model(input)
     loss = criterion(logits, target)
@@ -216,6 +199,7 @@ def infer(valid_queue, model, criterion):
       logging.info('valid %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
 
   return top1.avg, objs.avg
+
 
 
 if __name__ == '__main__':

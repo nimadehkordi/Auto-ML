@@ -1,57 +1,28 @@
-try:
-    import torch
-    import torch.utils.data
-    import torch.nn as nn
-    import torch.nn.functional as F
-except:
-    raise ImportError("For this example you need to install pytorch.")
-
-try:
-    import torchvision
-    import torchvision.transforms as transforms
-except:
-    raise ImportError("For this example you need to install pytorch-vision.")
-
-import ConfigSpace as CS
-import ConfigSpace.hyperparameters as CSH
-
-from hpbandster.core.worker import Worker
-
-import logging
-
-logging.basicConfig(level=logging.DEBUG)
-
-import logging
-import time
-import numpy as np
-import torch
-import torchvision.transforms as transforms
-from torch.utils.data import DataLoader
-from torchsummary import summary
-
-from datasets import K49
-
-import train
-
 import os
 import sys
-import time
-import glob
 import numpy as np
 import torch
 import utils
 import logging
-import argparse
+
 import torch.nn as nn
-import genotypes
 import torch.utils
-import torchvision.datasets as dset
+import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
 import torchvision.transforms as transforms
-from datasets import K49
-from torch.autograd import Variable
-from model import NetworkCIFAR as Network
+import torch.utils.data
 
+import ConfigSpace as CS
+import ConfigSpace.hyperparameters as CSH
+from hpbandster.core.worker import Worker
+
+from datasets import K49
+
+from torch.autograd import Variable
+from model_search import Network
+from architect import Architect
+
+logging.basicConfig(level=logging.DEBUG)
 
 class DARTSWorker(Worker):
     def __init__(self, data_dir='../data', save_model_str='../model/', **kwargs):
@@ -65,98 +36,168 @@ class DARTSWorker(Worker):
         self.train_dataset = K49(data_dir, True, data_augmentations)
         self.test_dataset = K49(data_dir, False, data_augmentations)
 
+        self.data='../data'
+        self.batch_size=64
+        self.learning_rate=0.025
+        self.learning_rate_min=0.001
+        self.momentum=0.9
+        self.weight_decay=3e-4
+        self.report_freq=2
+        self.gpu=0
+        self.epochs=50
+        self.init_channels=16
+        self.layers=8
+        self.model_path='saved_models'
+        self.cutout=False
+        self.cutout_length=16
+        self.drop_path_prob=0.3
+        self.save='EXP'
+        self.seed=2
+        self.grad_clip=5
+        self.train_portion=0.5
+        self.unrolled=False #use one-step unrolled validation loss
+        self.arch_learning_rate=3e-4 #learning rate for arch encoding
+        self.arch_weight_decay=1e-3 #weight decay for arch encoding'
+
     def compute(self, config, budget, working_directory, *args, **kwargs):
-        """
-        Simple example for a compute function using a feed forward network.
-        It is trained on the MNIST dataset.
-        The input parameter "config" (dictionary) contains the sampled configurations passed by the bohb optimizer
-        """
+        K49_CLASSES = 49
+        self.batch_size = int(config['batch_size'])
+        self.layers = int(config['layers'])
+        self.epochs = int(config['epochs'])
+        self.init_channels = int(config['init_channels'])
 
         if not torch.cuda.is_available():
             logging.info('no gpu device available')
             sys.exit(1)
 
-        np.random.seed(0)
-        torch.cuda.set_device(0)
+        np.random.seed(self.seed)
+        torch.cuda.set_device('cuda:0')
         cudnn.benchmark = True
-        torch.manual_seed(0)
-        cudnn.enabled = True
-        torch.cuda.manual_seed(0)
-        logging.info('gpu device = %d' % 0)
+        torch.manual_seed(self.seed)
+        cudnn.enabled=True
+        torch.cuda.manual_seed(self.seed)
+        logging.info('gpu device = %d' % self.gpu)
+        logging.info("args = %s", args)
 
-        layers = 20 #TODO: This should be a HP
-        auxiliary = False
-        init_channels = 36 #TODO: this should be a HP
-        CIFAR_CLASSES = 49
-        genotype = eval("genotypes.%s" % 'DARTS')
-        model = Network(init_channels, CIFAR_CLASSES, layers, auxiliary, genotype)
+        criterion = torch.nn.CrossEntropyLoss()
+        criterion = criterion.cuda()
+        model = Network(self.init_channels, K49_CLASSES, self.layers, criterion)
         model = model.cuda()
-
         logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
 
-        criterion = nn.CrossEntropyLoss()
-        criterion = criterion.cuda()
+        optimizer = torch.optim.SGD(
+            model.parameters(),
+            self.learning_rate,
+            momentum=self.momentum,
+            weight_decay=self.weight_decay)
 
-        # instantiate optimizer
-        if config['optimizer'] == 'Adam':
-            optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'])
-        else:
-            optimizer = torch.optim.SGD(
-                model.parameters(),
-                lr=config['lr'],
-                momentum=config['sgd_momentum'])#,
-                #weight_decay=config['weight_decay'])
-
-
-        data_dir = '../data/kmnist/'
-        data_augmentations = transforms.ToTensor()
-
-
-
-        train_portion = 0.8
         num_train = len(self.train_dataset)
         indices = list(range(num_train))
-        split = int(np.floor(train_portion * num_train))
+        split = int(np.floor(self.train_portion * num_train))
 
         train_queue = torch.utils.data.DataLoader(dataset=self.train_dataset,
-                                                  batch_size=int(config['batch_size']),
-                                                  sampler=torch.utils.data.sampler.SubsetRandomSampler(indices[:split]),
-                                                  pin_memory=True, num_workers=2)
+                                                    batch_size=self.batch_size,
+                                                    sampler=torch.utils.data.sampler.SubsetRandomSampler(indices[:split]),
+                                                    pin_memory=True, num_workers=2)
 
         valid_queue = torch.utils.data.DataLoader(dataset=self.train_dataset,
-                                                  batch_size=int(config['batch_size']),
-                                                  sampler=torch.utils.data.sampler.SubsetRandomSampler(
-                                                      indices[split:num_train]),
-                                                  pin_memory=True, num_workers=2)
+                                                    batch_size=self.batch_size,
+                                                    sampler=torch.utils.data.sampler.SubsetRandomSampler(
+                                                    indices[split:num_train]),
+                                                    pin_memory=True, num_workers=2)
 
-        test_queue = torch.utils.data.DataLoader(dataset= self.test_dataset, batch_size=int(config['batch_size']),
-                                                 shuffle=False, pin_memory=True, num_workers=2)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, float(self.epochs), eta_min=self.learning_rate_min)
 
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, float(budget))
+        architect = Architect(model, self)
 
-        for epoch in range(int(budget)):
+        for epoch in range(self.epochs):
+            lr = scheduler.get_lr()[0]
             scheduler.step()
-            logging.info('epoch %d lr %e', epoch, scheduler.get_lr()[0])
-            model.drop_path_prob = config['dropout_rate'] * epoch / budget
+            logging.info('epoch %d lr %e', epoch, lr)
 
-            train_acc, train_obj = train.train(train_queue, model, criterion, optimizer)
+            genotype = model.genotype()
+            logging.info('genotype = %s', genotype)
+
+            print(F.softmax(model.alphas_normal, dim=-1))
+            print(F.softmax(model.alphas_reduce, dim=-1))
+
+            # training
+            train_acc, train_obj = self._train(train_queue, valid_queue, model, architect, criterion, optimizer, lr)
             logging.info('train_acc %f', train_acc)
 
-            valid_acc, valid_obj = train.infer(valid_queue, model, criterion)
+            # validation
+            valid_acc, valid_obj = self._infer(valid_queue, model, criterion)
             logging.info('valid_acc %f', valid_acc)
 
-        test_acc, test_obj = test.infer(test_queue, model, criterion)
-        logging.info('test_acc %f', test_acc)
+            utils.save(model, os.path.join(self.save, 'weights.pt'))
+            return ({
+                'loss': 1- (valid_acc / 100),  # remember: HpBandSter always minimizes!
+                'info': {
+                        'train accuracy': train_acc,
+                        'validation accuracy': valid_acc
+                        }
+            })
+    def _train(self, train_queue, valid_queue, model, architect, criterion, optimizer, lr):
+        objs = utils.AvgrageMeter()
+        top1 = utils.AvgrageMeter()
+        top5 = utils.AvgrageMeter()
 
-        return ({
-            'loss': 1- (test_acc / 100),  # remember: HpBandSter always minimizes!
-            'info': {
-                     'train accuracy': train_acc,
-                     'validation accuracy': valid_acc,
-                     'test accuracy': test_acc
-                     }
-        })
+        for step, (input, target) in enumerate(train_queue):
+            model.train()
+            n = input.size(0)
 
+            input = Variable(input, requires_grad=False).cuda()
+            target = Variable(target, requires_grad=False).cuda()
+
+            # get a random minibatch from the search queue with replacement
+            input_search, target_search = next(iter(valid_queue))
+            input_search = Variable(input_search, requires_grad=False).cuda()
+            target_search = Variable(target_search, requires_grad=False).cuda()
+
+            architect.step(input, target, input_search, target_search, lr, optimizer, unrolled=self.unrolled)
+
+            optimizer.zero_grad()
+            logits = model(input)
+            loss = criterion(logits, target)
+
+            loss.backward()
+            nn.utils.clip_grad_norm(model.parameters(), self.grad_clip)
+            optimizer.step()
+
+            prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
+            #objs.update(loss.data[0], n)
+            objs.update(loss.item(), n)
+            top1.update(prec1.item(), n)
+            top5.update(prec5.item(), n)
+
+            if step % self.report_freq == 0:
+                logging.info('train %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+        return top1.avg, objs.avg
+
+    def _infer(self, valid_queue, model, criterion):
+        objs = utils.AvgrageMeter()
+        top1 = utils.AvgrageMeter()
+        top5 = utils.AvgrageMeter()
+        model.eval()
+
+        for step, (input, target) in enumerate(valid_queue):
+            input = Variable(input, volatile=True).cuda()
+            target = Variable(target, volatile=True).cuda()
+
+            logits = model(input)
+            loss = criterion(logits, target)
+
+            prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
+            n = input.size(0)
+            objs.update(loss.item(), n)
+            top1.update(prec1.item(), n)
+            top5.update(prec5.item(), n)
+
+            if step % self.report_freq == 0:
+                logging.info('valid %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+
+        return top1.avg, objs.avg
     @staticmethod
     def get_configspace():
         """
@@ -167,58 +208,25 @@ class DARTSWorker(Worker):
         """
         cs = CS.ConfigurationSpace()
 
-        lr = CSH.UniformFloatHyperparameter('lr', lower=1e-3, upper=1e-1, default_value='1e-2', log=True)
+        layers = CSH.UniformIntegerHyperparameter('layers', lower=8, upper=20, default_value=8)
+        cs.add_hyperparameter(layers)
 
-        # For demonstration purposes, we add different optimizers as categorical hyperparameters.
-        # To show how to use conditional hyperparameters with ConfigSpace, we'll add the optimizers 'Adam' and 'SGD'.
-        # SGD has a different parameter 'momentum'.
-        optimizer = CSH.CategoricalHyperparameter('optimizer', ['Adam', 'SGD'])
+        epochs = CSH.UniformIntegerHyperparameter('epochs', lower=25, upper=100, default_value=50)
+        cs.add_hyperparameter(epochs)
 
-        sgd_momentum = CSH.UniformFloatHyperparameter('sgd_momentum', lower=0.0, upper=0.99, default_value=0.9,
-                                                      log=False)
+        init_channels = CSH.UniformIntegerHyperparameter('init_channels', lower=4, upper=16, default_value=6)
+        cs.add_hyperparameters(init_channels)
 
-        cs.add_hyperparameters([lr, optimizer, sgd_momentum])
-
-        # The hyperparameter sgd_momentum will be used,if the configuration
-        # contains 'SGD' as optimizer.
-        cond = CS.EqualsCondition(sgd_momentum, optimizer, 'SGD')
-        cs.add_condition(cond)
-
-        n_layers = CSH.UniformIntegerHyperparameter('n_layers', lower=1, upper=2, default_value=1)
-        n_conv_layers = CSH.UniformIntegerHyperparameter('n_conv_layers', lower=1, upper=3, default_value=2)
-        cs.add_hyperparameters([n_layers, n_conv_layers])
-
-        kernel_size = CSH.UniformIntegerHyperparameter('kernel_size', lower=2, upper=8, default_value=4)
-        out_channels = CSH.UniformIntegerHyperparameter('out_channels', lower=4, upper=8, default_value=4)
-        cs.add_hyperparameters([kernel_size, out_channels])
-
-        dropout_rate = CSH.UniformFloatHyperparameter('dropout_rate', lower=0.0, upper=0.9, default_value=0.5,
-                                                      log=False)
-        cs.add_hyperparameter(dropout_rate)
-
-        weight_decay = CSH.UniformFloatHyperparameter('weight_decay', lower=3e-5, upper=3e-3, default_value=3e-4,
-                                                      log=True)
-        cs.add_hyperparameter(weight_decay)
-
-        cond = CS.EqualsCondition(weight_decay, optimizer, 'SGD')
-        cs.add_condition(cond)
-
-        # training criterion
-        train_criterion = CSH.CategoricalHyperparameter('train_criterion', ['cross_entropy'])
-        cs.add_hyperparameter(train_criterion)
-
-        # batch size
-        batch_size = CSH.CategoricalHyperparameter('batch_size', ['32', '64', '96', '128'])
+        batch_size = CSH.CategoricalHyperparameter('batch_size', ['32', '64', '96'])
         cs.add_hyperparameter(batch_size)
 
         return cs
 
 
 if __name__ == "__main__":
-    worker = DARTSWorker(data_dir='../data', save_model_str='../model/', run_id='0')
+    worker = DARTSWorker(data_dir='./data', save_model_str='../model/', run_id='0')
 
-    config = {"batch_size": "32", "dropout_rate": 0.18846285168791718, "kernel_size": 8, "lr": 0.041982015476332284, "n_conv_layers": 1,
-              "n_layers": 2, "optimizer": "SGD", "out_channels": 8, "train_criterion": "cross_entropy", "sgd_momentum": 0.38146034478981394}
+    config = {"batch_size": "32", "layers" : "8", "init_channels" : "16", "epochs" : "50"}
 
     res = worker.compute(config=config, budget=2, working_directory='.')
     print(res)

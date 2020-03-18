@@ -110,7 +110,7 @@ class K49(Dataset):
         imgs_fn = os.path.abspath(os.path.join(data_dir, imgs_fn))
         labels_fn = os.path.abspath(os.path.join(data_dir, labels_fn))
 
-        self.images = np.load(imgs_fn)['arr_0']
+        self.images = np.load(imgs_fn, allow_pickle=True)['arr_0']
         self.labels = np.load(labels_fn)['arr_0']
         self.n_classes = len(np.unique(self.labels))
         self.class_labels, self.class_frequency = np.unique(self.labels, return_counts=True)
