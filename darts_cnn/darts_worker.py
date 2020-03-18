@@ -84,9 +84,9 @@ class DARTSWorker(Worker):
         torch.cuda.manual_seed(0)
         logging.info('gpu device = %d' % 0)
 
-        layers = 20
+        layers = 20 #TODO: This should be a HP
         auxiliary = False
-        init_channels = 36
+        init_channels = 36 #TODO: this should be a HP
         CIFAR_CLASSES = 49
         genotype = eval("genotypes.%s" % 'DARTS')
         model = Network(init_channels, CIFAR_CLASSES, layers, auxiliary, genotype)
