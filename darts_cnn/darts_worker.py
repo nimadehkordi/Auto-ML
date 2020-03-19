@@ -215,7 +215,7 @@ class DARTSWorker(Worker):
         cs.add_hyperparameter(epochs)
 
         init_channels = CSH.UniformIntegerHyperparameter('init_channels', lower=4, upper=16, default_value=6)
-        cs.add_hyperparameters(init_channels)
+        cs.add_hyperparameter(init_channels)
 
         batch_size = CSH.CategoricalHyperparameter('batch_size', ['32', '64', '96'])
         cs.add_hyperparameter(batch_size)
@@ -225,8 +225,8 @@ class DARTSWorker(Worker):
 
 if __name__ == "__main__":
     worker = DARTSWorker(data_dir='./data', save_model_str='../model/', run_id='0')
-
-    config = {"batch_size": "32", "layers" : "8", "init_channels" : "16", "epochs" : "50"}
-
+    cs = worker.get_configspace()
+    config = cs.sample_configuration().get_dictionary()
+    print(config)
     res = worker.compute(config=config, budget=2, working_directory='.')
     print(res)
