@@ -63,7 +63,7 @@ class DARTSWorker(Worker):
         K49_CLASSES = 49
         self.batch_size = int(config['batch_size'])
         self.layers = int(config['layers'])
-        self.epochs = int(config['epochs'])
+        self.epochs = int(budget)
         self.init_channels = int(config['init_channels'])
 
         if not torch.cuda.is_available():
@@ -211,13 +211,10 @@ class DARTSWorker(Worker):
         layers = CSH.UniformIntegerHyperparameter('layers', lower=8, upper=20, default_value=8)
         cs.add_hyperparameter(layers)
 
-        epochs = CSH.UniformIntegerHyperparameter('epochs', lower=25, upper=100, default_value=50)
-        cs.add_hyperparameter(epochs)
-
-        init_channels = CSH.UniformIntegerHyperparameter('init_channels', lower=4, upper=16, default_value=6)
+        init_channels = CSH.UniformIntegerHyperparameter('init_channels', lower=4, upper=8, default_value=6)
         cs.add_hyperparameter(init_channels)
 
-        batch_size = CSH.CategoricalHyperparameter('batch_size', ['32', '64', '96'])
+        batch_size = CSH.CategoricalHyperparameter('batch_size', ['32'])
         cs.add_hyperparameter(batch_size)
 
         return cs
@@ -227,6 +224,8 @@ if __name__ == "__main__":
     worker = DARTSWorker(data_dir='./data', save_model_str='../model/', run_id='0')
     cs = worker.get_configspace()
     config = cs.sample_configuration().get_dictionary()
+    
     print(config)
-    res = worker.compute(config=config, budget=2, working_directory='.')
+
+    res = worker.compute(config=config, budget=1, working_directory='.')
     print(res)
